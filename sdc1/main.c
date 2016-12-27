@@ -20,6 +20,7 @@ static const SDL_Rect collision_boxes[] = {
     {.x = 0, .y = 0, .w = 8, .h = 8},
     {.x = 0, .y = 0, .w = 32, .h = 32},
     {.x = 0, .y = 0, .w = 5, .h = 5},
+    {.x = 0, .y = 0, .w = 5, .h = 5},
 };
 
 typedef enum {
@@ -60,7 +61,7 @@ typedef struct Entity {
     SDL_Rect hitbox;
     void *extra;
     void (*cleanup)(struct Entity *self);
-    int offset;
+    int id;
 } Entity;
 
 
@@ -68,7 +69,7 @@ typedef struct PlayerInfo {
     int h_speed;
     int v_speed;
     int countdown;
-};
+} PlayerInfo;
 
 typedef struct Item {
     Entity item;
@@ -89,12 +90,16 @@ Item items[1024] = {};
 Sprite background = {.r={.x=400,.y=300,.w=800,.h=600},.img=GRASS};
 
 /************************************* Code *****************************************/
+void cleanup_enemy(Entity *self);
+void cleanup_player(Entity *self);
+
+bool collide_sprite(Sprite *first, Sprite *second);
 void draw_sprite(SDL_Renderer *r, Sprite *spr);
 
-void init_enemy(Entity *enemy);
-void init_player(Entity *player);
+void init_enemy(Entity *self);
+void init_player(Entity *self);
 
-void items_add(Entity item);
+int items_add(Entity item);
 void items_delete(int offset);
 
 void update_bullet(Entity *self, const Uint8 *keyboard);
@@ -105,26 +110,33 @@ void update_player(Entity *self,  const Uint8 *keyboard);
 int main(int argc, char **argv) {
     SDL_Window *win;
     SDL_Renderer *r;
+    SDL_Event e;
 
+    int enemy_timeout;
     SDL_Init(SDL_INIT_EVERYTHING);
     IMG_Init(IMG_INIT_PNG);
     srand(time(NULL));
-    SDL_Event e;
+
 
     win = SDL_CreateWindow("Batty", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
                            800, 600, 0);
 
     r = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED);
 
+    enemy_timeout = rand() % 50;
+    
     spritesheet = IMG_LoadTexture(r, "spritesheet.png");
+    {
+        int player_offset = items_add((Entity){
+                .s=(Sprite){.img=PLAYER,
+                            .r=(SDL_Rect){.x = 400, .y = 300, .w = 32, .h = 32}},
+                .update = update_player,
+                .t = T_SHIP,
+                .a = A_PLAYER});
 
-    items_add((Entity){
-            .s=(Sprite){.img=PLAYER,
-                        .r=(SDL_Rect){.x = 400, .y = 300, .w = 32, .h = 32}},
-            .update = update_player,
-             .t = T_SHIP,
-                 .a = A_PLAYER});
-
+        init_player(&(items[player_offset].item));
+    }
+    
     while (!done) {
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT){
@@ -132,6 +144,17 @@ int main(int argc, char **argv) {
                 goto end;
             }
 
+        }
+
+        if (enemy_timeout <= 0) {
+            int enemy_offset = items_add((Entity){
+                    .s=(Sprite){.img=ENEMY,
+                                .r=(SDL_Rect){.x = rand() % 800, .y = -16, .w = 32, .h = 32}},
+                    .update = update_enemy,
+                    .t = T_SHIP,
+                    .a = A_ENEMY});
+            init_enemy(&items[enemy_offset].item);
+            enemy_timeout = rand() % 50;
         }
         
         const Uint8 *keyboard = SDL_GetKeyboardState(NULL);
@@ -147,7 +170,10 @@ int main(int argc, char **argv) {
 
         SDL_RenderPresent(r);
 
+        enemy_timeout--;
         SDL_Delay(1000/60.);
+
+        
     }
 
 end:
@@ -163,6 +189,51 @@ end:
     return 0;
 }
 
+void cleanup_enemy(Entity *self) {
+    free(self->extra);
+}
+
+// Stolen from the Apphack 6 program; there was only the one.
+// https://github.com/tekktonic/Apphack6/blob/master/JumpSprite.cs
+bool collide_sprite(Sprite *first, Sprite *second)
+{
+    SDL_Rect f = (SDL_Rect){.x=first->r.x, .y=first->r.y,
+                            .w=collision_boxes[first->img].w,
+                            .h=collision_boxes[first->img].h};
+    SDL_Rect s = (SDL_Rect){.x=second->r.x, .y=second->r.y,
+                            .w=collision_boxes[second->img].w,
+                            .h=collision_boxes[second->img].h};
+
+    // Correct for x and y being the sprite's middle
+    f.x -= (f.w/2);
+    f.y -= (f.h/2);
+    s.x -= (s.w/2);
+    s.y -= (s.h/2);
+    
+    int fx = f.x;
+    int fy = f.y;
+    int fx2 = f.x + f.w;
+    int fy2 = f.y + f.h;
+
+    int sx = s.x;
+    int sy = s.y;
+    int sx2 = s.x + s.w;
+    int sy2 = s.y + s.h;
+            
+    if ((fx <= sx2 && fx2 >= sx) || (sx <= fx2 && sx2 >= fx)) {
+        printf("Found a match on the X axis: %d %d %d %d\n", fx, fx2, sx, sx2);
+            if ((fy <= sy2 && fy2 >= sy) || (sy <= fy2 && sy2 >= fy)) {
+                printf("Found a match on the Y axis: %d %d %d %d\n", fy, fy2, sy, sy2);
+                return true;
+            }
+    }
+    return false;
+}
+
+void cleanup_player(Entity *self) {
+    free(self->extra);
+}
+
 void draw_sprite(SDL_Renderer *r, Sprite *spr) {
     Sprite s = *spr;
     SDL_Rect real_r = s.r;
@@ -172,24 +243,32 @@ void draw_sprite(SDL_Renderer *r, Sprite *spr) {
 }
 
 void init_enemy(Entity *self) {
-    
+    self->extra = malloc(sizeof(int));
+    *(int*)self->extra = rand() % 45;
+    self->cleanup = cleanup_enemy;
 }
 
 void init_player(Entity *self) {
-    
+    self->extra = malloc(sizeof(PlayerInfo));
+
+    *(PlayerInfo*)self->extra = (PlayerInfo){};
+
+    self->cleanup = cleanup_player;
 }
 
-void items_add(Entity item) {
+int items_add(Entity item) {
     int i = 0;
     for (; i < 1024 && items[i].exists; i++);
 
-    item.offset = i;
+    item.id = i;
     items[i].item = item;
     
     items[i].exists = true;
 
     if (i > last_item)
         last_item = i;
+
+    return i;
 }
 
 void items_delete(int offset)
@@ -207,14 +286,19 @@ void items_delete(int offset)
         // We already made sure the last item isn't 0, so we're not empty
         else
             for (int i = last_item - 1; i > 0; i--)
-                if (items[i].exists)
+                if (items[i].exists) {
                     last_item = i;
+                    break;
+                }
+                    
     }
 }
 
 void update_bullet(Entity *self, const Uint8 *keyboard) {
-    if (self->s.r.x < 0 || self->s.r.x > 800 || self->s.r.y < 0 || self->s.r.y > 600)
-        items_delete(self->offset);
+    if (self->s.r.x < 0 || self->s.r.x > 800 || self->s.r.y < 0 || self->s.r.y > 600) {
+        items_delete(self->id);
+        return;
+    }
 /*    for (int i = 0; i <= last_item; i++) {
         Entity *e = (Entity*)&(items[i]);
         if (items[i].exists)
@@ -228,16 +312,30 @@ void update_bullet(Entity *self, const Uint8 *keyboard) {
 }
 
 void update_enemy(Entity *self, const Uint8 *keyboard) {
-    if ( self->s.r.y > 800)
-        items_delete(self->offset);
+    if (self->s.r.y > 800) {
+        items_delete(self->id);
+        return;
+    }
 
+    for (int i = 0; i < last_item; i++) {
+        if (items[i].exists) {
+            Entity *e = (Entity*)&items[i];
+            if (collide_sprite((Sprite*)self, (Sprite*)e)
+                && e->a == A_PLAYER && e->t == T_BULLET) {
+
+                items_delete(self->id);
+                return;
+            }
+        }
+    }
+    
     self->s.r.y += 5;
     SDL_Rect r = self->s.r;
     if (*(int*)self->extra <= 0) {
         items_add(
-            (Entity){.s=(Sprite){.img=EBULLET, .r=(SDL_Rect){.x = r.x, .y=r.y-(r.w/2),.w=5,.h=5}},
+            (Entity){.s=(Sprite){.img=EBULLET, .r=(SDL_Rect){.x = r.x, .y=r.y-(r.w/2),.w=10,.h=10}},
                     .update = update_bullet, .t = T_BULLET, .a = A_ENEMY});
-        (*(int*)self->extra) = (random() % 45) + 1;
+        (*(int*)self->extra) = (rand() % 45) + 1;
     }
 
     (*(int*)self->extra)--;
@@ -274,15 +372,15 @@ void update_player(Entity *self, const Uint8 *keyboard) {
         SDL_Rect r = self->s.r;
         cooldown = 45;
         items_add(
-            (Entity){.s=(Sprite){.img=PBULLET, .r=(SDL_Rect){.x = r.x-2, .y=r.y,.w=5,.h=5}},
+            (Entity){.s=(Sprite){.img=PBULLET, .r=(SDL_Rect){.x = r.x-2, .y=r.y,.w=10,.h=10}},
                 .update = update_bullet, .t = T_BULLET, .a = A_PLAYER});
     }
-//    printf("Before: %d %d\n", self->s.r.x, self->s.r.y);
+
     ((Sprite*)self)->r.x += h_speed;
     ((Sprite*)self)->r.y += v_speed;
 
     if (cooldown > 0)
         cooldown--;
-//    printf("After: %d %d\n", self->s.r.x, self->s.r.y);
+
 }
 
